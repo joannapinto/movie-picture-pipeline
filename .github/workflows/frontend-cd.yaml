@@ -1,4 +1,3 @@
-
 name: Frontend Continuous Deployment
 
 on:
@@ -6,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'starter/frontend/**'
+      - "starter/frontend/**"
   workflow_dispatch:
 
 env:
@@ -15,6 +14,7 @@ env:
   ECR_REPOSITORY: frontend
   EKS_CLUSTER_NAME: cluster
   IMAGE_TAG: ${{ github.sha }}
+  REACT_APP_MOVIE_API_URL: http://a19238b0e81d94223b02197da32e6bba-1266631624.us-east-1.elb.amazonaws.com
 
 jobs:
   lint:
@@ -22,18 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./starter/frontend
+        working-directory: starter/frontend
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: starter/frontend/.nvmrc
           cache: npm
           cache-dependency-path: starter/frontend/package-lock.json
+
       - name: Install dependencies
         run: npm ci
+
       - name: Run lint
         run: npm run lint
 
@@ -42,28 +46,50 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./starter/frontend
+        working-directory: starter/frontend
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: starter/frontend/.nvmrc
           cache: npm
           cache-dependency-path: starter/frontend/package-lock.json
+
       - name: Install dependencies
         run: npm ci
+
       - name: Run tests
-        run: CI=true npm test
+        run: npm test -- --watchAll=false
 
   build:
     name: Build and Push
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs:
+      - lint
+      - test
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: starter/frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: starter/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: starter/frontend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: starter/frontend
+        run: npm test -- --watchAll=false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -76,20 +102,23 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build Docker image
-        working-directory: ./starter/frontend
+        working-directory: starter/frontend
         run: |
           docker build \
-            --build-arg REACT_APP_MOVIE_API_URL=http://localhost:5000 \
-            --tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
+            --build-arg REACT_APP_MOVIE_API_URL=${{ env.REACT_APP_MOVIE_API_URL }} \
+            --tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
+            .
 
       - name: Push Docker image
         run: |
-          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker push \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
 
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
     needs: build
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -101,11 +130,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
       - name: Configure kubeconfig
         run: |
           aws eks update-kubeconfig \
-            --region ${{ env.AWS_REGION }} \
-            --name ${{ env.EKS_CLUSTER_NAME }}
+            --name ${{ env.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
 
       - name: Install kustomize
         run: |
@@ -113,12 +147,12 @@ jobs:
           sudo mv kustomize /usr/local/bin/
 
       - name: Update Kubernetes image
-        working-directory: ./starter/frontend/k8s
+        working-directory: starter/frontend/k8s
         run: |
           kustomize edit set image \
             frontend=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
 
-      - name: Deploy to EKS
-        working-directory: ./starter/frontend/k8s
+      - name: Deploy frontend
+        working-directory: starter/frontend/k8s
         run: |
           kustomize build | kubectl apply -f -
